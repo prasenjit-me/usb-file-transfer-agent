@@ -7,6 +7,7 @@ import customtkinter as ctk
 
 import usb_manager
 from agent import GrokAgent
+from voice import VoiceRecorder
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -22,6 +23,7 @@ class USBAgentApp(ctk.CTk):
     def __init__(self, api_key: str):
         super().__init__()
         self.agent = GrokAgent(api_key)
+        self.voice = VoiceRecorder(api_key)
         self.usb_drives: list = []
         self.selected_usb: dict | None = None
         self.windows_path = str(Path.home() / "Desktop")
@@ -29,6 +31,7 @@ class USBAgentApp(ctk.CTk):
         self.win_items: list = []
         self.usb_items: list = []
         self._typing_frame = None
+        self._is_recording = False
 
         self.title("USB File Transfer Agent  •  Powered by Groq (Llama 3.3)")
         self.geometry("1100x820")
@@ -222,13 +225,22 @@ class USBAgentApp(ctk.CTk):
 
         self.chat_input = ctk.CTkEntry(
             input_row,
-            placeholder_text="Ask the AI anything about your files…",
+            placeholder_text="Ask the AI anything, or press 🎤 to speak…",
             height=42, corner_radius=21,
             border_width=1, border_color="#2e2e4e",
             font=ctk.CTkFont(size=12),
         )
         self.chat_input.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.chat_input.bind("<Return>", lambda _e: self._send_chat())
+
+        self.mic_btn = ctk.CTkButton(
+            input_row, text="🎤", width=42, height=42,
+            corner_radius=21,
+            fg_color="#2a2a44", hover_color="#3a3a5e",
+            font=ctk.CTkFont(size=16),
+            command=self._toggle_recording,
+        )
+        self.mic_btn.pack(side="right", padx=(0, 8))
 
         self.send_btn = ctk.CTkButton(
             input_row, text="↑", width=42, height=42,
@@ -425,6 +437,33 @@ class USBAgentApp(ctk.CTk):
     # ──────────────────────────────────────────────
     # CHAT — messages & input
     # ──────────────────────────────────────────────
+
+    def _toggle_recording(self):
+        if self._is_recording:
+            # Stop recording and transcribe
+            self._is_recording = False
+            self.mic_btn.configure(text="🎤", fg_color="#2a2a44", hover_color="#3a3a5e")
+            self._set_status("Transcribing…")
+
+            def transcribe():
+                try:
+                    text = self.voice.stop_and_transcribe()
+                    if text:
+                        self.after(0, lambda: self.chat_input.delete(0, "end"))
+                        self.after(0, lambda: self.chat_input.insert(0, text))
+                        self.after(0, lambda: self._set_status(f"Heard: {text}"))
+                    else:
+                        self.after(0, lambda: self._set_status("Nothing heard. Try again."))
+                except Exception as e:
+                    self.after(0, lambda err=e: self._set_status(f"Transcription error: {err}"))
+
+            threading.Thread(target=transcribe, daemon=True).start()
+        else:
+            # Start recording
+            self._is_recording = True
+            self.mic_btn.configure(text="⏹", fg_color="#aa2222", hover_color="#cc3333")
+            self._set_status("🎤 Recording… click ⏹ to stop")
+            self.voice.start()
 
     def _send_chat(self):
         msg = self.chat_input.get().strip()
