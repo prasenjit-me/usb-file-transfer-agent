@@ -7,7 +7,7 @@ import customtkinter as ctk
 
 import usb_manager
 from agent import GrokAgent
-from voice import VoiceRecorder
+from voice import VoiceAgent
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -18,12 +18,24 @@ BG_CHAT   = "#13131f"
 BG_BUBBLE = "#252538"
 BG_ERROR  = "#3a1a1a"
 
+VOICE_STATES = {
+    "off":        ("🎙 Voice Mode", "#2a2a44", "#3a3a5e", "Voice mode off"),
+    "listening":  ("🎙 Listening…", "#1a3a6a", "#1a4a8a", "🔵  Listening — speak anytime"),
+    "hearing":    ("🔴 I hear you", "#6a1a1a", "#8a2222", "🔴  Hearing you…"),
+    "processing": ("⏳ Thinking…",  "#5a4a00", "#7a6000", "⏳  AI is thinking…"),
+    "speaking":   ("🔊 Speaking…",  "#1a5a1a", "#226622", "🔊  Speaking…"),
+}
+
 
 class USBAgentApp(ctk.CTk):
     def __init__(self, api_key: str):
         super().__init__()
         self.agent = GrokAgent(api_key)
-        self.voice = VoiceRecorder(api_key)
+        self.voice_agent = VoiceAgent(
+            api_key,
+            on_state=self._on_voice_state,
+            on_transcript=self._on_voice_transcript,
+        )
         self.usb_drives: list = []
         self.selected_usb: dict | None = None
         self.windows_path = str(Path.home() / "Desktop")
@@ -31,11 +43,12 @@ class USBAgentApp(ctk.CTk):
         self.win_items: list = []
         self.usb_items: list = []
         self._typing_frame = None
-        self._is_recording = False
+        self._voice_on = False
 
-        self.title("USB File Transfer Agent  •  Powered by Groq (Llama 3.3)")
+        self.title("USB File Transfer Agent  •  Powered by Groq (Llama 3.3 + Whisper)")
         self.geometry("1100x820")
         self.minsize(900, 660)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self._build_ui()
         self.after(200, self.refresh_drives)
@@ -46,9 +59,9 @@ class USBAgentApp(ctk.CTk):
 
     def _build_ui(self):
         self._build_topbar()
-        self._build_statusbar()   # bottom items must be packed before the expanding panel
-        self._build_chat_bar()    # sits just above the status bar
-        self._build_panels()      # expands to fill remaining middle space
+        self._build_statusbar()
+        self._build_chat_bar()
+        self._build_panels()
 
     def _build_topbar(self):
         bar = ctk.CTkFrame(self, height=56, corner_radius=0, fg_color=BG_CARD)
@@ -81,7 +94,6 @@ class USBAgentApp(ctk.CTk):
         wrapper = ctk.CTkFrame(self, corner_radius=0, fg_color="transparent")
         wrapper.pack(fill="both", expand=True, padx=10, pady=6)
 
-        # Left – Windows
         self.left = ctk.CTkFrame(wrapper, corner_radius=10)
         self.left.pack(side="left", fill="both", expand=True, padx=(0, 4))
         self._panel_header(self.left, "💻  Windows", is_windows=True)
@@ -91,17 +103,14 @@ class USBAgentApp(ctk.CTk):
             font=ctk.CTkFont(size=10), text_color="gray", anchor="w",
         )
         self.win_path_label.pack(fill="x", padx=12, pady=(0, 4))
-
         self.win_scroll = ctk.CTkScrollableFrame(self.left, corner_radius=6)
         self.win_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        # Middle – Action buttons
         mid = ctk.CTkFrame(wrapper, width=120, corner_radius=10, fg_color=BG_CARD)
         mid.pack(side="left", fill="y", padx=4)
         mid.pack_propagate(False)
         self._build_mid_buttons(mid)
 
-        # Right – USB
         self.right = ctk.CTkFrame(wrapper, corner_radius=10)
         self.right.pack(side="left", fill="both", expand=True, padx=(4, 0))
         self._panel_header(self.right, "🔌  USB Drive", is_windows=False)
@@ -111,7 +120,6 @@ class USBAgentApp(ctk.CTk):
             font=ctk.CTkFont(size=10), text_color="gray", anchor="w",
         )
         self.usb_path_label.pack(fill="x", padx=12, pady=(0, 4))
-
         self.usb_scroll = ctk.CTkScrollableFrame(self.right, corner_radius=6)
         self.usb_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
@@ -119,7 +127,6 @@ class USBAgentApp(ctk.CTk):
         hdr = ctk.CTkFrame(parent, height=42, corner_radius=0, fg_color="transparent")
         hdr.pack(fill="x", padx=8, pady=(8, 2))
         hdr.pack_propagate(False)
-
         ctk.CTkLabel(hdr, text=title, font=ctk.CTkFont(size=13, weight="bold")).pack(
             side="left", padx=4
         )
@@ -136,7 +143,6 @@ class USBAgentApp(ctk.CTk):
 
     def _build_mid_buttons(self, parent):
         ctk.CTkLabel(parent, text="Transfer", font=ctk.CTkFont(weight="bold")).pack(pady=(18, 8))
-
         for label, action, direction in [
             ("Copy →\nto USB", "copy", "win_to_usb"),
             ("Move →\nto USB", "move", "win_to_usb"),
@@ -170,28 +176,24 @@ class USBAgentApp(ctk.CTk):
         self._drag_start_y = 0
         self._drag_start_height = 0
 
-        self.bottom_frame = ctk.CTkFrame(self, height=280, corner_radius=0, fg_color=BG_CARD)
+        self.bottom_frame = ctk.CTkFrame(self, height=300, corner_radius=0, fg_color=BG_CARD)
         self.bottom_frame.pack(fill="x", side="bottom")
         self.bottom_frame.pack_propagate(False)
 
-        # ── Drag handle ──
-        handle = ctk.CTkFrame(
-            self.bottom_frame, height=14, cursor="sb_v_double_arrow",
-            fg_color="#1a1a2e", corner_radius=0,
-        )
+        # Drag handle
+        handle = ctk.CTkFrame(self.bottom_frame, height=14, cursor="sb_v_double_arrow",
+                               fg_color="#1a1a2e", corner_radius=0)
         handle.pack(fill="x")
         handle.pack_propagate(False)
-        ctk.CTkLabel(
-            handle, text="───────────────",
-            font=ctk.CTkFont(size=8), text_color="#444466",
-        ).pack(expand=True)
-        for widget in [handle] + handle.winfo_children():
-            widget.bind("<ButtonPress-1>", self._drag_start)
-            widget.bind("<B1-Motion>", self._drag_motion)
+        ctk.CTkLabel(handle, text="───────────────",
+                     font=ctk.CTkFont(size=8), text_color="#444466").pack(expand=True)
+        for w in [handle] + handle.winfo_children():
+            w.bind("<ButtonPress-1>", self._drag_start)
+            w.bind("<B1-Motion>", self._drag_motion)
 
-        # ── Chat header row ──
-        hdr = ctk.CTkFrame(self.bottom_frame, fg_color="transparent", height=36)
-        hdr.pack(fill="x", padx=12, pady=(8, 4))
+        # Chat header
+        hdr = ctk.CTkFrame(self.bottom_frame, fg_color="transparent", height=40)
+        hdr.pack(fill="x", padx=12, pady=(8, 2))
         hdr.pack_propagate(False)
 
         ctk.CTkLabel(
@@ -199,31 +201,36 @@ class USBAgentApp(ctk.CTk):
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(side="left", padx=2)
 
+        # Voice mode toggle button
+        self.voice_btn = ctk.CTkButton(
+            hdr,
+            text=VOICE_STATES["off"][0],
+            width=160, height=30,
+            fg_color=VOICE_STATES["off"][1],
+            hover_color=VOICE_STATES["off"][2],
+            font=ctk.CTkFont(size=12),
+            command=self._toggle_voice_mode,
+        )
+        self.voice_btn.pack(side="left", padx=12)
+
         ctk.CTkButton(
-            hdr, text="Clear chat", width=80, height=26,
+            hdr, text="Clear", width=60, height=30,
             fg_color="#2a2a44", hover_color="#3a3a5e",
             font=ctk.CTkFont(size=11),
             command=self._clear_chat,
         ).pack(side="right", padx=2)
 
-        ctk.CTkLabel(
-            hdr,
-            text='Try: "move report.pdf to USB"  •  "copy all .jpg to Desktop"',
-            font=ctk.CTkFont(size=10), text_color="#555577",
-        ).pack(side="left", padx=12)
-
-        # ── Messages area ──
+        # Messages area
         self.chat_messages = ctk.CTkScrollableFrame(
             self.bottom_frame, fg_color=BG_CHAT, corner_radius=10,
         )
-        self.chat_messages.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+        self.chat_messages.pack(fill="both", expand=True, padx=10, pady=(0, 4))
 
-        # ── Input row ──
+        # Input row
         input_row = ctk.CTkFrame(self.bottom_frame, fg_color="transparent", height=48)
         input_row.pack(fill="x", padx=10, pady=(0, 10))
         input_row.pack_propagate(False)
 
-        # Pack right-side buttons first (rightmost first with side="right")
         self.send_btn = ctk.CTkButton(
             input_row, text="↑", width=42, height=42,
             corner_radius=21,
@@ -232,18 +239,9 @@ class USBAgentApp(ctk.CTk):
         )
         self.send_btn.pack(side="right")
 
-        self.mic_btn = ctk.CTkButton(
-            input_row, text="🎤", width=42, height=42,
-            corner_radius=21,
-            fg_color="#2a2a44", hover_color="#3a3a5e",
-            font=ctk.CTkFont(size=16),
-            command=self._toggle_recording,
-        )
-        self.mic_btn.pack(side="right", padx=(0, 8))
-
         self.chat_input = ctk.CTkEntry(
             input_row,
-            placeholder_text="Ask the AI anything, or press 🎤 to speak…",
+            placeholder_text='Type a command, or click "🎙 Voice Mode" to speak hands-free…',
             height=42, corner_radius=21,
             border_width=1, border_color="#2e2e4e",
             font=ctk.CTkFont(size=12),
@@ -257,7 +255,7 @@ class USBAgentApp(ctk.CTk):
 
     def _drag_motion(self, event):
         delta = self._drag_start_y - event.y_root
-        new_height = max(120, min(560, self._drag_start_height + delta))
+        new_height = max(140, min(560, self._drag_start_height + delta))
         self.bottom_frame.configure(height=new_height)
 
     # ──────────────────────────────────────────────
@@ -297,7 +295,7 @@ class USBAgentApp(ctk.CTk):
             self.usb_path = None
             self.usb_path_label.configure(text="No USB selected")
             self._refresh_usb_list()
-            self._set_status("No USB drive found. Please plug in a USB drive and click Refresh.")
+            self._set_status("No USB drive found.")
         self._refresh_win_list()
 
     def _on_usb_select(self, value: str):
@@ -436,70 +434,55 @@ class USBAgentApp(ctk.CTk):
         threading.Thread(target=run, daemon=True).start()
 
     # ──────────────────────────────────────────────
-    # CHAT — messages & input
+    # VOICE MODE — hands-free loop
     # ──────────────────────────────────────────────
 
-    def _toggle_recording(self):
-        if self._is_recording:
-            self._is_recording = False
-            self.mic_btn.configure(text="⏳", fg_color="#885500", hover_color="#885500", state="disabled")
-            self._set_status("Transcribing…")
-
-            def transcribe():
-                try:
-                    text = self.voice.stop_and_transcribe()
-                    if text:
-                        self.after(0, lambda: self._voice_send(text))
-                    else:
-                        self.after(0, lambda: self._set_status("Nothing heard — try again."))
-                        self.after(0, self._reset_mic)
-                except Exception as e:
-                    self.after(0, lambda err=e: self._set_status(f"Transcription error: {err}"))
-                    self.after(0, self._reset_mic)
-
-            threading.Thread(target=transcribe, daemon=True).start()
+    def _toggle_voice_mode(self):
+        if self._voice_on:
+            self._voice_on = False
+            self.voice_agent.stop()
+            self._update_voice_btn("off")
+            self._set_status("Voice mode off.")
         else:
-            self._is_recording = True
-            self.mic_btn.configure(text="⏹", fg_color="#aa2222", hover_color="#cc3333")
-            self.send_btn.configure(state="disabled")
-            self._set_status("🎤 Recording… click ⏹ to stop")
-            self.voice.start()
+            self._voice_on = True
+            self.voice_agent.start()
+            self._add_system_msg("🎙 Voice mode active — just speak, no button needed.")
 
-    def _voice_send(self, text: str):
-        """Full voice loop: show user bubble → AI reply → speak response."""
-        self._add_bubble(text, "user")
-        self._show_typing()
-        self.send_btn.configure(state="disabled")
-        self._set_status("🤖 AI is thinking…")
+    def _on_voice_state(self, state: str):
+        """Called from background thread — must use after() for UI."""
+        self.after(0, lambda s=state: self._update_voice_btn(s))
+
+    def _update_voice_btn(self, state: str):
+        label, fg, hover, status = VOICE_STATES.get(state, VOICE_STATES["off"])
+        self.voice_btn.configure(text=label, fg_color=fg, hover_color=hover)
+        self._set_status(status)
+
+    def _on_voice_transcript(self, text: str):
+        """Called from background thread when Whisper has a result."""
+        self.after(0, lambda: self._add_bubble(text, "user"))
+        self.after(0, self._show_typing)
 
         def ask():
             try:
-                reply = self.agent.chat(text, usb_path=self.usb_path, windows_path=self.windows_path)
+                reply = self.agent.chat(
+                    text, usb_path=self.usb_path, windows_path=self.windows_path
+                )
                 self.after(0, self._hide_typing)
                 self.after(0, lambda: self._add_bubble(reply, "ai"))
                 self.after(0, self._refresh_win_list)
                 self.after(0, self._refresh_usb_list)
-                self.after(0, lambda: self._set_status("🔊 Speaking…"))
-                # Speak in background so UI stays responsive
-                threading.Thread(target=self._speak_then_ready, args=(reply,), daemon=True).start()
+                # Speak blocks here, then resumes listening via VoiceAgent internals
+                self.voice_agent.speak(reply)
             except Exception as e:
                 self.after(0, self._hide_typing)
                 self.after(0, lambda err=e: self._add_bubble(str(err), "error"))
-                self.after(0, self._reset_mic)
+                self.voice_agent.resume()
 
         threading.Thread(target=ask, daemon=True).start()
 
-    def _speak_then_ready(self, text: str):
-        try:
-            self.voice.speak(text)
-        finally:
-            self.after(0, self._reset_mic)
-            self.after(0, lambda: self._set_status("✅ Done — click 🎤 to speak again"))
-
-    def _reset_mic(self):
-        self._is_recording = False
-        self.mic_btn.configure(text="🎤", fg_color="#2a2a44", hover_color="#3a3a5e", state="normal")
-        self.send_btn.configure(state="normal", fg_color=ACCENT)
+    # ──────────────────────────────────────────────
+    # TEXT CHAT
+    # ──────────────────────────────────────────────
 
     def _send_chat(self):
         msg = self.chat_input.get().strip()
@@ -517,7 +500,9 @@ class USBAgentApp(ctk.CTk):
 
         def ask():
             try:
-                reply = self.agent.chat(msg, usb_path=self.usb_path, windows_path=self.windows_path)
+                reply = self.agent.chat(
+                    msg, usb_path=self.usb_path, windows_path=self.windows_path
+                )
                 self.after(0, self._hide_typing)
                 self.after(0, lambda: self._add_bubble(reply, "ai"))
                 self.after(0, self._refresh_win_list)
@@ -530,49 +515,57 @@ class USBAgentApp(ctk.CTk):
 
         threading.Thread(target=ask, daemon=True).start()
 
+    # ──────────────────────────────────────────────
+    # CHAT BUBBLES
+    # ──────────────────────────────────────────────
+
     def _add_bubble(self, text: str, sender: str):
-        """sender: 'user' | 'ai' | 'error'"""
-        is_user = sender == "user"
+        is_user  = sender == "user"
         is_error = sender == "error"
+        is_sys   = sender == "system"
         time_str = datetime.now().strftime("%H:%M")
 
-        # Meta row (name + time)
+        if is_sys:
+            frm = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
+            frm.pack(fill="x", pady=4)
+            ctk.CTkLabel(
+                frm, text=text,
+                font=ctk.CTkFont(size=10, slant="italic"),
+                text_color="#555577",
+            ).pack()
+            self._scroll_to_bottom()
+            return
+
         meta = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
         meta.pack(fill="x", padx=8, pady=(8, 1))
-        name = "You" if is_user else ("⚠ Error" if is_error else "Grok AI")
-        name_color = "#888aaa" if not is_error else "#cc6666"
+        name  = "You" if is_user else ("⚠ Error" if is_error else "Grok AI")
+        ncolor = "#888aaa" if not is_error else "#cc6666"
         ctk.CTkLabel(
             meta, text=f"{name}  {time_str}",
-            font=ctk.CTkFont(size=9), text_color=name_color,
+            font=ctk.CTkFont(size=9), text_color=ncolor,
         ).pack(side="right" if is_user else "left")
 
-        # Bubble row
         bubble_row = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
         bubble_row.pack(fill="x", padx=8, pady=(0, 2))
 
-        if is_error:
-            bg = BG_ERROR
-        elif is_user:
-            bg = ACCENT
-        else:
-            bg = BG_BUBBLE
-
+        bg = BG_ERROR if is_error else (ACCENT if is_user else BG_BUBBLE)
         bubble = ctk.CTkFrame(bubble_row, fg_color=bg, corner_radius=14)
         bubble.pack(
             side="right" if is_user else "left",
             padx=(80, 0) if is_user else (0, 80),
         )
-
         ctk.CTkLabel(
             bubble, text=text,
-            wraplength=400,
-            justify="right" if is_user else "left",
+            wraplength=420, justify="right" if is_user else "left",
             font=ctk.CTkFont(size=12),
             text_color="#ffaaaa" if is_error else "white",
             anchor="w",
         ).pack(padx=14, pady=9)
 
         self._scroll_to_bottom()
+
+    def _add_system_msg(self, text: str):
+        self._add_bubble(text, "system")
 
     def _show_typing(self):
         self._typing_frame = ctk.CTkFrame(self.chat_messages, fg_color="transparent")
@@ -603,6 +596,10 @@ class USBAgentApp(ctk.CTk):
     # ──────────────────────────────────────────────
     # HELPERS
     # ──────────────────────────────────────────────
+
+    def _on_close(self):
+        self.voice_agent.stop()
+        self.destroy()
 
     def _set_status(self, msg: str):
         self.status_label.configure(text=msg)
