@@ -46,9 +46,9 @@ class USBAgentApp(ctk.CTk):
 
     def _build_ui(self):
         self._build_topbar()
-        self._build_panels()
-        self._build_chat_bar()
-        self._build_statusbar()
+        self._build_statusbar()   # bottom items must be packed before the expanding panel
+        self._build_chat_bar()    # sits just above the status bar
+        self._build_panels()      # expands to fill remaining middle space
 
     def _build_topbar(self):
         bar = ctk.CTkFrame(self, height=56, corner_radius=0, fg_color=BG_CARD)
@@ -171,7 +171,7 @@ class USBAgentApp(ctk.CTk):
         self._drag_start_height = 0
 
         self.bottom_frame = ctk.CTkFrame(self, height=280, corner_radius=0, fg_color=BG_CARD)
-        self.bottom_frame.pack(fill="x")
+        self.bottom_frame.pack(fill="x", side="bottom")
         self.bottom_frame.pack_propagate(False)
 
         # ── Drag handle ──
