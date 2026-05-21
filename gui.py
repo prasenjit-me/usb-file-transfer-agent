@@ -441,30 +441,65 @@ class USBAgentApp(ctk.CTk):
 
     def _toggle_recording(self):
         if self._is_recording:
-            # Stop recording and transcribe
             self._is_recording = False
-            self.mic_btn.configure(text="🎤", fg_color="#2a2a44", hover_color="#3a3a5e")
+            self.mic_btn.configure(text="⏳", fg_color="#885500", hover_color="#885500", state="disabled")
             self._set_status("Transcribing…")
 
             def transcribe():
                 try:
                     text = self.voice.stop_and_transcribe()
                     if text:
-                        self.after(0, lambda: self.chat_input.delete(0, "end"))
-                        self.after(0, lambda: self.chat_input.insert(0, text))
-                        self.after(0, lambda: self._set_status(f"Heard: {text}"))
+                        self.after(0, lambda: self._voice_send(text))
                     else:
-                        self.after(0, lambda: self._set_status("Nothing heard. Try again."))
+                        self.after(0, lambda: self._set_status("Nothing heard — try again."))
+                        self.after(0, self._reset_mic)
                 except Exception as e:
                     self.after(0, lambda err=e: self._set_status(f"Transcription error: {err}"))
+                    self.after(0, self._reset_mic)
 
             threading.Thread(target=transcribe, daemon=True).start()
         else:
-            # Start recording
             self._is_recording = True
             self.mic_btn.configure(text="⏹", fg_color="#aa2222", hover_color="#cc3333")
+            self.send_btn.configure(state="disabled")
             self._set_status("🎤 Recording… click ⏹ to stop")
             self.voice.start()
+
+    def _voice_send(self, text: str):
+        """Full voice loop: show user bubble → AI reply → speak response."""
+        self._add_bubble(text, "user")
+        self._show_typing()
+        self.send_btn.configure(state="disabled")
+        self._set_status("🤖 AI is thinking…")
+
+        def ask():
+            try:
+                reply = self.agent.chat(text, usb_path=self.usb_path, windows_path=self.windows_path)
+                self.after(0, self._hide_typing)
+                self.after(0, lambda: self._add_bubble(reply, "ai"))
+                self.after(0, self._refresh_win_list)
+                self.after(0, self._refresh_usb_list)
+                self.after(0, lambda: self._set_status("🔊 Speaking…"))
+                # Speak in background so UI stays responsive
+                threading.Thread(target=self._speak_then_ready, args=(reply,), daemon=True).start()
+            except Exception as e:
+                self.after(0, self._hide_typing)
+                self.after(0, lambda err=e: self._add_bubble(str(err), "error"))
+                self.after(0, self._reset_mic)
+
+        threading.Thread(target=ask, daemon=True).start()
+
+    def _speak_then_ready(self, text: str):
+        try:
+            self.voice.speak(text)
+        finally:
+            self.after(0, self._reset_mic)
+            self.after(0, lambda: self._set_status("✅ Done — click 🎤 to speak again"))
+
+    def _reset_mic(self):
+        self._is_recording = False
+        self.mic_btn.configure(text="🎤", fg_color="#2a2a44", hover_color="#3a3a5e", state="normal")
+        self.send_btn.configure(state="normal", fg_color=ACCENT)
 
     def _send_chat(self):
         msg = self.chat_input.get().strip()

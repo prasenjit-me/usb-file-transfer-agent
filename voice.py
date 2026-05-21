@@ -1,12 +1,12 @@
 import os
 import wave
 import tempfile
-import threading
 import numpy as np
 import sounddevice as sd
+import pyttsx3
 from openai import OpenAI
 
-SAMPLE_RATE = 16000  # Whisper works best at 16 kHz
+SAMPLE_RATE = 16000
 CHANNELS = 1
 
 
@@ -16,6 +16,13 @@ class VoiceRecorder:
         self._recording = False
         self._frames: list = []
         self._stream = None
+
+        # TTS — initialise on main thread to avoid SAPI5 issues on Windows
+        self._tts = pyttsx3.init()
+        self._tts.setProperty("rate", 165)
+        self._tts.setProperty("volume", 0.9)
+
+    # ── Recording ──────────────────────────────────
 
     def start(self):
         self._frames = []
@@ -43,11 +50,11 @@ class VoiceRecorder:
             return ""
 
         audio = np.concatenate(self._frames, axis=0)
-
         tmp_path = tempfile.mktemp(suffix=".wav")
+
         with wave.open(tmp_path, "wb") as wf:
             wf.setnchannels(CHANNELS)
-            wf.setsampwidth(2)          # int16 = 2 bytes per sample
+            wf.setsampwidth(2)
             wf.setframerate(SAMPLE_RATE)
             wf.writeframes(audio.tobytes())
 
@@ -61,3 +68,10 @@ class VoiceRecorder:
             return str(result).strip()
         finally:
             os.unlink(tmp_path)
+
+    # ── Text-to-Speech ─────────────────────────────
+
+    def speak(self, text: str):
+        """Blocking TTS — call from a background thread."""
+        self._tts.say(text)
+        self._tts.runAndWait()
