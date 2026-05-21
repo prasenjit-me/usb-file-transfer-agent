@@ -223,15 +223,14 @@ class USBAgentApp(ctk.CTk):
         input_row.pack(fill="x", padx=10, pady=(0, 10))
         input_row.pack_propagate(False)
 
-        self.chat_input = ctk.CTkEntry(
-            input_row,
-            placeholder_text="Ask the AI anything, or press 🎤 to speak…",
-            height=42, corner_radius=21,
-            border_width=1, border_color="#2e2e4e",
-            font=ctk.CTkFont(size=12),
+        # Pack right-side buttons first (rightmost first with side="right")
+        self.send_btn = ctk.CTkButton(
+            input_row, text="↑", width=42, height=42,
+            corner_radius=21,
+            font=ctk.CTkFont(size=18, weight="bold"),
+            command=self._send_chat,
         )
-        self.chat_input.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self.chat_input.bind("<Return>", lambda _e: self._send_chat())
+        self.send_btn.pack(side="right")
 
         self.mic_btn = ctk.CTkButton(
             input_row, text="🎤", width=42, height=42,
@@ -242,13 +241,15 @@ class USBAgentApp(ctk.CTk):
         )
         self.mic_btn.pack(side="right", padx=(0, 8))
 
-        self.send_btn = ctk.CTkButton(
-            input_row, text="↑", width=42, height=42,
-            corner_radius=21,
-            font=ctk.CTkFont(size=18, weight="bold"),
-            command=self._send_chat,
+        self.chat_input = ctk.CTkEntry(
+            input_row,
+            placeholder_text="Ask the AI anything, or press 🎤 to speak…",
+            height=42, corner_radius=21,
+            border_width=1, border_color="#2e2e4e",
+            font=ctk.CTkFont(size=12),
         )
-        self.send_btn.pack(side="right")
+        self.chat_input.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.chat_input.bind("<Return>", lambda _e: self._send_chat())
 
     def _drag_start(self, event):
         self._drag_start_y = event.y_root
